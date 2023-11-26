@@ -3,7 +3,7 @@ const app = express();
 require("dotenv").config();
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
 const morgan = require("morgan");
 const port = process.env.PORT || 5000;
@@ -93,6 +93,7 @@ async function run() {
             res.send(result);
         });
 
+        //getting all contests
         app.get("/contests", async (req, res) => {
             const category = req.query.category;
             let query = {};
@@ -107,11 +108,21 @@ async function run() {
             res.send(result);
         });
 
+        //getting top contests for home page
         app.get("/top_contests", async (req, res) => {
             const cursor = contestCollection.find().sort({ attemptedCount: -1 });
             const foundContests = await cursor.limit(5).toArray();
 
             res.send(foundContests);
+        });
+
+        //getting single contest data
+        app.get("/contest/:id", async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+
+            const contest = await contestCollection.findOne(query);
+            res.send(contest);
         });
 
         // Send a ping to confirm a successful connection
