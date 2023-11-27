@@ -45,6 +45,7 @@ const client = new MongoClient(process.env.DB_URI, {
 async function run() {
     try {
         const contestCollection = client.db("ContestHubDB").collection("Contests");
+        const usersCollection = client.db("ContestHubDB").collection("Users");
 
         // auth related api
         app.post("/jwt", async (req, res) => {
@@ -123,6 +124,15 @@ async function run() {
 
             const contest = await contestCollection.findOne(query);
             res.send(contest);
+        });
+
+        //posting new contest
+        app.post("/contests", async (req, res) => {
+            const contest = req.body;
+            console.log(contest);
+
+            const result = await contestCollection.insertOne(contest);
+            res.send(result);
         });
 
         // Send a ping to confirm a successful connection
