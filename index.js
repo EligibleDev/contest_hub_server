@@ -135,6 +135,24 @@ async function run() {
             res.send(result);
         });
 
+        //getting single user's data
+        app.get("/user/:email", async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+
+            const result = await usersCollection.findOne(query);
+            res.send(result);
+        });
+
+        //get specific creator's contest
+        app.get("/contests/:email", async (req, res) => {
+            const email = req.params.email;
+            const query = { "creatorInfo.email": email };
+
+            const result = await contestCollection.find(query).toArray();
+            res.send(result);
+        });
+
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
