@@ -6,11 +6,17 @@ const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const jwt = require("jsonwebtoken");
 const morgan = require("morgan");
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 5000;
 
 // middleware
 const corsOptions = {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
+    origin: [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "https://assignment-12-contest-hub.web.app",
+        "https://assignment-12-contest-hub.firebaseapp.com",
+    ],
     credentials: true,
     optionSuccessStatus: 200,
 };
@@ -46,6 +52,33 @@ async function run() {
     try {
         const contestCollection = client.db("ContestHubDB").collection("Contests");
         const usersCollection = client.db("ContestHubDB").collection("Users");
+        const registrationCollection = client
+            .db("ContestHubDB")
+            .collection("Registrations");
+
+        //admin verification
+        const verifyAdmin = async (req, res, next) => {
+            const user = req.user;
+            const query = { email: user?.email };
+            const result = await usersCollection.findOne(query);
+
+            if (!result || result?.role !== "admin") {
+                return res.status(403).send({ message: "forbidden" });
+            }
+            next();
+        };
+
+        //creator verification
+        const verifyCreator = async (req, res, next) => {
+            const user = req.user;
+            const query = { email: user?.email };
+            const result = await usersCollection.findOne(query);
+
+            if (!result || result?.role !== "creator") {
+                return res.status(403).send({ message: "forbidden" });
+            }
+            next();
+        };
 
         // auth related api
         app.post("/jwt", async (req, res) => {
@@ -94,10 +127,10 @@ async function run() {
             res.send(result);
         });
 
-        //getting all contests
+        //getting all approved contests
         app.get("/contests", async (req, res) => {
             const category = req.query.category;
-            let query = {};
+            let query = { status: "approved" };
 
             if (category) {
                 query.category = category;
@@ -109,9 +142,18 @@ async function run() {
             res.send(result);
         });
 
+        //getting all contests for dev
+        app.get("/all_contests", async (req, res) => {
+            const cursor = contestCollection.find();
+            const result = await cursor.toArray();
+
+            res.send(result);
+        });
+
         //getting top contests for home page
         app.get("/top_contests", async (req, res) => {
-            const cursor = contestCollection.find().sort({ attemptedCount: -1 });
+            const query = { status: "approved" };
+            const cursor = contestCollection.find(query).sort({ attemptedCount: -1 });
             const foundContests = await cursor.limit(5).toArray();
 
             res.send(foundContests);
@@ -124,6 +166,24 @@ async function run() {
 
             const contest = await contestCollection.findOne(query);
             res.send(contest);
+        });
+
+        //updating user role
+        app.put("/users/update/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const user = req.body;
+            const query = { email: email };
+            const options = { upsert: true };
+
+            const updateDoc = {
+                $set: {
+                    ...user,
+                    timestamp: Date.now(),
+                },
+            };
+
+            const result = await usersCollection.updateOne(query, updateDoc, options);
+            res.send(result);
         });
 
         //posting new contest
@@ -144,12 +204,165 @@ async function run() {
             res.send(result);
         });
 
+        //getting all users for admin
+        app.get("/users", async (req, res) => {
+            const cursor = usersCollection.find();
+            const result = await cursor.toArray();
+
+            res.send(result);
+        });
+
         //get specific creator's contest
         app.get("/contests/:email", async (req, res) => {
             const email = req.params.email;
             const query = { "creatorInfo.email": email };
 
             const result = await contestCollection.find(query).toArray();
+            res.send(result);
+        });
+
+        //generate client secret for client payment
+        app.post("/create_payment_intent", verifyToken, async (req, res) => {
+            const { price } = req.body;
+            const amount = parseInt(price * 100);
+
+            if (!price || amount < 1) {
+                return;
+            }
+
+            const { client_secret } = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: "usd",
+                payment_method_types: ["card"],
+            });
+
+            res.send({ clientSecret: client_secret });
+        });
+
+        //saving registration info
+        app.post("/registrations", verifyToken, async (req, res) => {
+            const { _id, ...registration } = req.body;
+            const result = await registrationCollection.insertOne(registration);
+
+            res.send(result);
+        });
+
+        //updating contest status
+        app.patch("/update_contest_status/:id", async (req, res) => {
+            const id = req.params.id;
+            const status = req.body.status;
+            console.log(status);
+            const query = { _id: new ObjectId(id) };
+            const update = { $set: { status: status } };
+            const options = { upsert: true };
+
+            const result = await contestCollection.updateOne(query, update, options);
+            res.send(result);
+        });
+
+        //deleting contest
+        app.delete("/delete_contest/:id", async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+
+            const result = await contestCollection.deleteOne(query);
+            res.send(result);
+        });
+
+        //saving participant data
+        app.patch("/save_participant_info/:id", async (req, res) => {
+            const id = req.params.id;
+            const participantInfo = req.body;
+
+            const query = { _id: new ObjectId(id) };
+            const update = {
+                $push: {
+                    participants: participantInfo,
+                },
+                $inc: {
+                    attemptedCount: 1,
+                },
+            };
+
+            const result = await contestCollection.updateOne(query, update);
+            res.send(result);
+        });
+
+        //updating contest
+        app.patch("/update_contest/:id", async (req, res) => {
+            const id = req.params.id;
+            const contest = req.body;
+            const query = { _id: new ObjectId(id) };
+
+            const options = { upsert: true };
+            const update = {
+                $set: {
+                    name: contest.name,
+                    price: contest.price,
+                    image: contest.image,
+                    prizeMoney: contest.prizeMoney,
+                    category: contest.category,
+                    deadline: contest.deadline,
+                    taskSubmissionText: contest.taskSubmissionText,
+                    description: contest.description,
+                },
+            };
+
+            const result = await contestCollection.updateOne(query, update, options);
+            res.send(result);
+        });
+
+        //getting user specific participated data
+        app.get("/my_participated_contests/:email", async (req, res) => {
+            const email = req.params.email;
+            const query = {
+                participants: {
+                    $elemMatch: {
+                        email: email,
+                    },
+                },
+            };
+
+            const result = await contestCollection.find(query).toArray();
+            res.send(result);
+        });
+
+        //getting user specific winning data
+        app.get("/my_winning_contests/:email", async (req, res) => {
+            const email = req.params.email;
+            const query = { "winnerInfo.email": email };
+
+            const result = await contestCollection.find(query).toArray();
+            res.send(result);
+        });
+
+        //making a participant winner
+        app.patch("/declare_winner/:id", async (req, res) => {
+            const id = req.params.id;
+            const participant = req.body;
+
+            const query = { _id: new ObjectId(id) };
+            const update = {
+                $set: {
+                    winnerInfo: participant,
+                },
+            };
+            const options = { upsert: true };
+
+            const result = await contestCollection.updateOne(query, update, options);
+            res.send(result);
+        });
+
+        // Search contests by category
+        app.get("/search_contests/:category", async (req, res) => {
+            const category = req.params.category;
+            const query = {
+                status: "approved",
+                category: { $regex: new RegExp(category, "i") },
+            };
+
+            const cursor = contestCollection.find(query);
+            const result = await cursor.toArray();
             res.send(result);
         });
 
